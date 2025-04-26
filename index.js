@@ -1,6 +1,7 @@
 require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const express = require("express");
+const nodemailer = require("nodemailer");
 const app = express();
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
@@ -16,20 +17,6 @@ app.use(
 );
 app.use(express.json());
 app.use(cookieParser());
-
-// middle ware ------------->
-
-// jwt verify -------->
-const verifyToken = (req, res, next) => {
-  const token = req.cookies.token;
-  if (!token) return res.status(401).send({ message: "Unauthorized" });
-
-  jwt.verify(token, process.env.JWT_SECRET, (err, decode) => {
-    if (err) return res.status(403).send({ message: "Forbidden" });
-    req.decode = decode;
-    next();
-  });
-};
 
 const uri = `mongodb+srv://${process.env.DB_USERNAME}:${process.env.DB_PASS}@cluster0.hmqrzhm.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -58,6 +45,89 @@ async function run() {
       .db("Cpi-it-club")
       .collection("assignments");
 
+    // middle ware ------------->
+
+    // jwt verify token-------->
+    const verifyToken = (req, res, next) => {
+      const token = req.cookies.token;
+      if (!token) return res.status(401).send({ message: "Unauthorized" });
+
+      jwt.verify(token, process.env.JWT_SECRET, (err, decode) => {
+        if (err) return res.status(403).send({ message: "Forbidden" });
+        req.decode = decode;
+        next();
+      });
+    };
+
+    // admin middleware ------->
+    const verifyAdmin = async (req, res, next) => {
+      const email = req?.decode?.email;
+      const user = await usersCollection.findOne({ email });
+      if (!user || user?.role !== "admin") {
+        return res.status(403).send({ message: "Forbidden: Admins only" });
+      }
+      next();
+    };
+
+    const sendEmail = (emailAddress, emailData) => {
+      const transporter = nodemailer.createTransport({
+        service: "gmail",
+        host: "smtp.gmail.com",
+        port: 587,
+        secure: false,
+        auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASS,
+        },
+      });
+        const htmlTemplate = `
+    <div style="font-family: Arial, sans-serif; background-color: #f9f9f9; padding: 20px;">
+      <div style="max-width: 600px; margin: auto; background-color: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.05);">
+        <h2 style="color: #1e40af; text-align: center;">📩 New Contact Message</h2>
+        <p style="text-align: center; color: #555;">Someone just reached out via your contact form.</p>
+        <hr style="margin: 20px 0; border: none; border-top: 1px solid #eaeaea;" />
+        <p><strong>👤 Name:</strong> ${emailData.name}</p>
+        <p><strong>📧 Email:</strong> ${emailData.email}</p>
+        <p><strong>📝 Subject:</strong> ${emailData.subject}</p>
+        <div style="margin-top: 20px;">
+          <p style="font-weight: bold;">💬 Message:</p>
+          <p style="background-color: #f1f5f9; padding: 15px; border-radius: 6px; border-left: 4px solid #3b82f6; color: #333;">
+            ${emailData.message}
+          </p>
+        </div>
+        <p style="margin-top: 30px; font-size: 13px; color: #999;">This email was automatically sent from your website contact form.</p>
+      </div>
+    </div>
+  `;
+      transporter.verify((error, success) => {
+        if (error) {
+          console.log(error);
+        } else {
+          console.log("Server is ready to take our message", success);
+        }
+      });
+      const mailBody = {
+        from: process.env.EMAIL_USER,
+        to: emailAddress,
+        subject: emailData?.subject,
+        html: htmlTemplate,
+      };
+      transporter.sendMail(mailBody, (error, info) => {
+        if (error) {
+          console.log(error);
+        } else {
+          console.log("Email sent", info.response);
+        }
+      });
+    };
+
+  app.post("/try-contact", (req, res) => {
+    const data = req.body;
+    console.log(data);
+    sendEmail(process.env.EMAIL_USER, data);
+    res.send({ status: "success", message: "Email sent successfully!" });
+  });
+
     // jwt create
     app.post("/jwt", (req, res) => {
       const user = req.body; // { email }
@@ -70,6 +140,7 @@ async function run() {
           httpOnly: true,
           secure: process.env.NODE_ENV === "production", // true in production
           sameSite: process.env.NODE_ENV === "production" ? "none" : "lax", // 🔥 fix here
+          maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
         })
         .send({ success: true });
     });
@@ -93,7 +164,7 @@ async function run() {
     });
 
     // post notice------>
-    app.post("/notice", async (req, res) => {
+    app.post("/notice", verifyToken, verifyAdmin, async (req, res) => {
       const notice = req.body;
       if (!notice.title || !notice.date) {
         return res.status(400).json({ message: "Title and date are required" });
@@ -109,7 +180,7 @@ async function run() {
 
     // delete a notice ---------->
 
-    app.delete("/notice/:id", verifyToken, async (req, res) => {
+    app.delete("/notice/:id", verifyToken, verifyToken, async (req, res) => {
       const id = req.params.id;
       try {
         const query = { _id: new ObjectId(id) };
@@ -132,7 +203,7 @@ async function run() {
     });
 
     // event post --------->
-    app.post("/events", async (req, res) => {
+    app.post("/events", verifyToken, verifyAdmin, async (req, res) => {
       const event = req.body;
       console.log(event);
       try {
@@ -145,7 +216,7 @@ async function run() {
     });
 
     // event delete ---------->
-    app.delete("/events/:id", verifyToken, async (req, res) => {
+    app.delete("/events/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       console.log(id);
       try {
@@ -163,7 +234,7 @@ async function run() {
     });
 
     // course delete
-    app.delete("/course/:id", verifyToken, async (req, res) => {
+    app.delete("/course/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       console.log(id);
       try {
@@ -200,13 +271,13 @@ async function run() {
     });
 
     // classes get --->
-    app.get("/classes", async (req, res) => {
+    app.get("/classes", verifyToken, async (req, res) => {
       const result = await classesCollection.find().toArray();
       res.send(result);
     });
 
     // single class get ----------->
-    app.get("/classes/:id", async (req, res) => {
+    app.get("/classes/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
       try {
         const result = await classesCollection.findOne({
@@ -226,21 +297,21 @@ async function run() {
 
     // post a class-------->
 
-    app.post("/classes", verifyToken, async (req, res) => {
+    app.post("/classes", verifyToken, verifyAdmin, async (req, res) => {
       const classData = req.body;
       const result = await classesCollection.insertOne(classData);
       res.send(result);
     });
 
     // post a course
-    app.post("/courses", async (req, res) => {
+    app.post("/courses", verifyToken, verifyAdmin, async (req, res) => {
       const courseData = req.body;
       const result = await coursesCollection.insertOne(courseData);
       res.send(result);
     });
 
     // delete class -------->
-    app.delete("/classes/:id", verifyToken, async (req, res) => {
+    app.delete("/classes/:id", verifyToken, verifyAdmin, async (req, res) => {
       const { id } = req.params;
       try {
         const result = await classesCollection.deleteOne({
@@ -257,7 +328,7 @@ async function run() {
     });
 
     // delete courses -------->
-    app.delete("/courses/:id", verifyToken, async (req, res) => {
+    app.delete("/courses/:id", verifyToken, verifyAdmin, async (req, res) => {
       const { id } = req.params;
       console.log(id);
       try {
@@ -276,7 +347,7 @@ async function run() {
 
     // update the class
 
-    app.patch("/classes/:id", async (req, res) => {
+    app.patch("/classes/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const updatedData = req.body;
       try {
@@ -296,7 +367,7 @@ async function run() {
       res.send(result);
     });
     // single courses get --->
-    app.get("/courses/:id", async (req, res) => {
+    app.get("/courses/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
       try {
         const result = await coursesCollection.findOne({
@@ -317,9 +388,8 @@ async function run() {
     // save user database ---------->
 
     // put a user ------>
-    app.put("/users", verifyToken, async (req, res) => {
+    app.put("/users", async (req, res) => {
       const newUser = req.body;
-      newUser.role = "user";
       console.log("New user:", newUser);
       try {
         const isExited = await usersCollection.findOne({
@@ -337,7 +407,7 @@ async function run() {
       }
     });
 
-    app.get("/users", verifyToken, async (req, res) => {
+    app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
       const result = await usersCollection.find().toArray();
       res.send(result);
     });
@@ -370,34 +440,37 @@ async function run() {
 
     // change role ----------->
 
-    app.put("/users/role/:email", async (req, res) => {
-      const { email } = req.params;
-      const { role } = req.body;
+    app.put(
+      "/users/role/:email",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { email } = req.params;
+        const { role } = req.body;
 
-      console.log(email, role);
-      try {
-        const result = await usersCollection.updateOne(
-          { email },
-          { $set: { role } }
-        );
+        console.log(email, role);
+        try {
+          const result = await usersCollection.updateOne(
+            { email },
+            { $set: { role } }
+          );
 
-        if (result.modifiedCount > 0) {
-          res.status(200).send({ message: `User role updated to ${role}` });
-        } else {
-          res
-            .status(404)
-            .send({ message: "User not found or already has that role" });
+          if (result.modifiedCount > 0) {
+            res.status(200).send({ message: `User role updated to ${role}` });
+          } else {
+            res
+              .status(404)
+              .send({ message: "User not found or already has that role" });
+          }
+        } catch (error) {
+          console.error("Error updating role:", error);
+          res.status(500).send({ message: "Internal Server Error" });
         }
-      } catch (error) {
-        console.error("Error updating role:", error);
-        res.status(500).send({ message: "Internal Server Error" });
       }
-    });
+    );
 
     // update Profile
     const { ObjectId } = require("mongodb");
-
-    app.use(express.json()); // Important
 
     app.put("/users/:id", async (req, res) => {
       const id = req.params.id;
@@ -429,7 +502,7 @@ async function run() {
     });
 
     // gallery delete ---------->
-    app.delete("/gallery/:id", async (req, res) => {
+    app.delete("/gallery/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       console.log(id);
       try {
@@ -447,7 +520,7 @@ async function run() {
     });
 
     // post a gallery
-    app.post("/gallery", async (req, res) => {
+    app.post("/gallery", verifyToken, verifyAdmin, async (req, res) => {
       const image = req.body;
       const result = await galleryCollection.insertOne(image);
       res.send(result);
@@ -460,7 +533,7 @@ async function run() {
     });
 
     // POST a new member
-    app.post("/members", async (req, res) => {
+    app.post("/members", verifyToken, async (req, res) => {
       try {
         const member = req.body;
         const result = await membersCollection.insertOne(member);
@@ -471,7 +544,7 @@ async function run() {
     });
 
     //  delete members---------->
-    app.delete("/member/:id", async (req, res) => {
+    app.delete("/member/:id", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const id = req.params.id;
         const result = await membersCollection.deleteOne({
@@ -486,20 +559,20 @@ async function run() {
     });
 
     // assignment get ----------->
-    app.get("/assignments", async (req, res) => {
+    app.get("/assignments", verifyToken, verifyAdmin, async (req, res) => {
       const result = await assignmentsCollection.find().toArray();
       res.send(result);
     });
 
     //  get email by assignment -------------->
-    app.get("/assignment/:email", async (req, res) => {
+    app.get("/assignment/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
       const result = await assignmentsCollection.find({ email }).toArray();
       res.send(result);
     });
 
     // post a assignment -------->
-    app.post("/assignments", async (req, res) => {
+    app.post("/assignments", verifyToken, async (req, res) => {
       try {
         const member = req.body;
         const result = await assignmentsCollection.insertOne(member);
@@ -512,30 +585,33 @@ async function run() {
     });
 
     // DELETE an assignment by ID
-    app.delete("/assignments/:id", async (req, res) => {
-      const id = req.params.id;
+    app.delete(
+      "/assignments/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
 
-      try {
-        const result = await assignmentsCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
+        try {
+          const result = await assignmentsCollection.deleteOne({
+            _id: new ObjectId(id),
+          });
 
-        if (result.deletedCount === 1) {
-          res.send({ message: "Assignment deleted", deletedCount: 1 });
-        } else {
-          res.status(404).send({ message: "Assignment not found" });
+          if (result.deletedCount === 1) {
+            res.send({ message: "Assignment deleted", deletedCount: 1 });
+          } else {
+            res.status(404).send({ message: "Assignment not found" });
+          }
+        } catch (error) {
+          res
+            .status(500)
+            .send({ message: "Failed to delete assignment", error });
         }
-      } catch (error) {
-        res.status(500).send({ message: "Failed to delete assignment", error });
       }
-    });
-
-
-
-
+    );
 
     // update mark a assignment -------------->
-    app.patch("/assignment/:id", async (req, res) => {
+    app.patch("/assignment/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const { mark } = req.body;
       console.log(mark);
