@@ -11,8 +11,8 @@ const port = process.env.PORT || 5000;
 // middleware
 app.use(
   cors({
-    origin: "http://localhost:5173", // Use your frontend origin here
-    credentials: true, // Allow credentials
+    origin: ["http://localhost:5173", "https://cpi-it-club.netlify.app"], // client origins
+    credentials: true,
   })
 );
 app.use(express.json());
@@ -32,7 +32,7 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    await client.connect(); //when it deploy it is commented
+    // await client.connect();
 
     const membersCollection = client.db("Cpi-it-club").collection("members");
     const coursesCollection = client.db("Cpi-it-club").collection("courses");
@@ -80,7 +80,7 @@ async function run() {
           pass: process.env.EMAIL_PASS,
         },
       });
-        const htmlTemplate = `
+      const htmlTemplate = `
     <div style="font-family: Arial, sans-serif; background-color: #f9f9f9; padding: 20px;">
       <div style="max-width: 600px; margin: auto; background-color: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.05);">
         <h2 style="color: #1e40af; text-align: center;">📩 New Contact Message</h2>
@@ -121,12 +121,12 @@ async function run() {
       });
     };
 
-  app.post("/try-contact", (req, res) => {
-    const data = req.body;
-    console.log(data);
-    sendEmail(process.env.EMAIL_USER, data);
-    res.send({ status: "success", message: "Email sent successfully!" });
-  });
+    app.post("/try-contact", (req, res) => {
+      const data = req.body;
+      console.log(data);
+      sendEmail(process.env.EMAIL_USER, data);
+      res.send({ status: "success", message: "Email sent successfully!" });
+    });
 
     // jwt create
     app.post("/jwt", (req, res) => {
@@ -620,6 +620,28 @@ async function run() {
         { $set: { mark } }
       );
       res.send(result);
+    });
+
+    app.get("/admin-stats", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const eventCount = await eventsCollection.estimatedDocumentCount();
+        const classCount = await classesCollection.estimatedDocumentCount();
+        const courseCount = await coursesCollection.estimatedDocumentCount();
+        const noticeCount = await noticeCollection.estimatedDocumentCount();
+        const usersCount = await usersCollection.estimatedDocumentCount();
+        const membersCount = await membersCollection.estimatedDocumentCount();
+
+        res.send({
+          events: eventCount,
+          classes: classCount,
+          courses: courseCount,
+          notices: noticeCount,
+          members: membersCount,
+          users: usersCount,
+        });
+      } catch (error) {
+        res.status(500).json({ message: "Failed to load stats" });
+      }
     });
 
     // Send a ping to confirm a successful connection
